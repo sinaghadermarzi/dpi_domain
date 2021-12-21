@@ -69,7 +69,7 @@ class bindingdb_records:
         return None
 
 
-    def read_from_csv(self, csv_path, sepa ='\t', df_pickle_dir = "./cached_data/"):
+    def read_from_csv(self, csv_path, sepa ='\t'):
         # reads the dataframe from a csv and writes it down to a pickle file
         fname = ".".join(csv_path.split("/")[-1].split(".")[:-1])
         cb = TqdmCallback(desc="reading csv")
