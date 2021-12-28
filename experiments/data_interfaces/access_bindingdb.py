@@ -6,6 +6,8 @@
 import pickle
 from tqdm.dask import TqdmCallback
 from tqdm.autonotebook import tqdm
+from download_file import download
+from zipfile import ZipFile
 import math
 
 import dask.dataframe as dd
@@ -101,23 +103,82 @@ class bindingdb_records:
         return None
 
     def save_to_pickle(self,pickle_path):
+        dir,fname = os.path.split(pickle_path)
+        if not os.path.exists(dir):
+            os.makedirs(dir)
         with open (pickle_path, "wb") as outf:
             pickle.dump([self.__records, self.__prots_by_drug, self.__drugs_by_protein, self.__bin_interaction,self.__bin_ligandsof,self.__bin_targetsof], outf)
         return None
 
+    def download_and_read(self,url,save_dir):
+        zfilename = os.path.split(url)[1]
+        bdb_version = zfilename.split("_")[-1].split(".")[0]
+        save_dir = save_dir.rstrip("/")
+        target_path = save_dir + "/db" + bdb_version + ".tsv"
+        if os.path.exists(target_path):
+            pass
+        else:
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            print("downloading bindingdb file...")
+            download(url, save_dir)
+            print("extracting bindingdb file...")
+            with ZipFile(save_dir+"/"+zfilename,"r") as zip_ref:
+                zip_ref.extractall(save_dir)
+            curr_path = save_dir+"/BindingDB_All.tsv"
+            os.rename(curr_path,target_path)
+        self.read_from_csv(target_path)
 
-    def binarize_db(self, l_threshold=1000, h_threshold=30000, use_measure = "Ki"):
+
+    def binarize_db(self, l_threshold=1000, h_threshold=30000, use_measure = "all_consistent"):
         self.__bin_interaction = dict()
         self.__bin_ligandsof = dict()
         self.__bin_targetsof = dict()
-        if use_measure=="use_all4":
-            pass # to be implemented later if necessary for now we focus on Ki
+        if use_measure=="all_consistent":
+            idx = 0
+            for (p, d) in tqdm(self.__records, desc="binarizing affinities"):
+                idx += 1
+                recs = self.__records[(p, d)]
+                res = bindingdb_records.__binarize_use_several_noconflict(pair_records=recs,afftype_list=["Ki","Kd","IC50","EC50"],
+                                                                l_threshold=l_threshold, h_threshold=h_threshold)
+                if type(res) == bool:
+                    self.__bin_interaction[(p, d)] = res
+                    if res:
+                        if p in self.__bin_ligandsof:
+                            self.__bin_ligandsof[p].add(d)
+                        else:
+                            self.__bin_ligandsof[p] = {d}
+
+                        if d in self.__bin_targetsof:
+                            self.__bin_targetsof[d].add(p)
+                        else:
+                            self.__bin_targetsof[d] = {p}
+        elif use_measure == "any_positive":
+            idx = 0
+            for (p, d) in tqdm(self.__records, desc="binarizing affinities"):
+                idx += 1
+                recs = self.__records[(p, d)]
+                res = bindingdb_records.__binarize_use_several_any(pair_records=recs,
+                                                                   afftype_list=["Ki", "Kd", "IC50", "EC50"],
+                                                                   l_threshold=l_threshold, h_threshold=h_threshold)
+                if type(res) == bool:
+                    self.__bin_interaction[(p, d)] = res
+                    if res:
+                        if p in self.__bin_ligandsof:
+                            self.__bin_ligandsof[p].add(d)
+                        else:
+                            self.__bin_ligandsof[p] = {d}
+
+                        if d in self.__bin_targetsof:
+                            self.__bin_targetsof[d].add(p)
+                        else:
+                            self.__bin_targetsof[d] = {p}
         else:
             idx = 0
             for (p, d) in tqdm(self.__records, desc= "binarizing affinities"):
                 idx += 1
                 recs = self.__records[(p,d)]
-                res = bindingdb_records.__binarize_use_specific(pair_records=recs,measure_name=use_measure,l_threshold=l_threshold,h_threshold=h_threshold)
+                res = bindingdb_records.__binarize_use_several_noconflict(pair_records=recs,afftype_list=[use_measure],l_threshold=l_threshold,h_threshold=h_threshold)
                 if type(res) == bool:
                     self.__bin_interaction[(p, d)] = res
                     if res:
@@ -250,91 +311,145 @@ class bindingdb_records:
 
 
     @staticmethod
-    def __binarize_use_several_any(pair_records, l_threshold, h_threshold):
-        # to be implemented if neccessary
-        # num_pos = 0
-        # num_neg = 0
-        # for i in range(len(pair_records)):
-        #     bin_Ki = bindingdb_records.__binary_from_str(pair_records[i]["Ki"], l_threshold, h_threshold)
-        #     bin_IC50 = bindingdb_records.__binary_from_str(pair_records[i]["IC50"], l_threshold, h_threshold)
-        #     if (type(bin_Ki) == bool) and (type(bin_IC50) == bool):
-        #         if bin_Ki and bin_IC50:
-        #             num_pos += 1
-        #         elif (not bin_Ki) and (not bin_IC50):
-        #             num_neg += 1
-        #     elif type(bin_Ki) == bool:
-        #         if bin_Ki:
-        #             num_pos += 1
-        #         else:
-        #             num_neg += 1
-        #     elif type(bin_IC50) == bool:
-        #         if bin_IC50:
-        #             num_pos += 1
-        #         else:
-        #             num_neg += 1
-        # num_all = num_pos + num_neg
-        # if num_all == 0:
-        #     return "undecided_none"
-        # if num_neg == 0:
-        #     return True
-        # if num_pos == 0:
-        #     return False
-        return "undecided_conflict"
+    def __binarize_use_several_any(pair_records,afftype_list, l_threshold, h_threshold):
+        # infers a binary interaction based on the records in bindingdb. binary value need not to have consistent between different affinity types (Ki,Kd,IC50,EC50) but it must be consistent among records of same type
+        # as long as at least one of the affinity types are positive, we infer a positive interaction, but if all of them are consistently negative, we infer negative
+        # conflict within one type of measure invalidates that measure but not the whole results for that pair. as long as there is one conistent positive
+        bin_for_type= dict()
+        for afftype in afftype_list:
+            num_pos= 0
+            num_neg= 0
+            for i in range(len(pair_records)):
+                aff_field = pair_records[i][afftype]
+                if type(aff_field)==str:
+                    bin = bindingdb_records.__binary_from_str(aff_field, l_threshold, h_threshold)
+                    if type(bin)==bool:
+                        if bin:
+                            num_pos[afftype] += 1
+                        else:
+                            num_neg[afftype] += 1
+            ## all records for that measure has been seen time to infer a binary for this afftype
+            num_all = num_pos + num_neg
+            if num_all == 0:
+                bin_for_type[afftype] ="undecided_none"
+            elif num_neg == 0:
+                bin_for_type[afftype] = True
+            elif num_pos == 0:
+                bin_for_type[afftype] = False
+            else:
+                bin_for_type[afftype] = "undecided_conflict"
 
+        negative_seen = False
+        conflict_seen = False
+        for afftype in afftype_list:
+            if bin_for_type[afftype]==True:
+                return True
+            if bin_for_type[afftype]==False:
+                negative_seen= True
+            if bin_for_type[afftype]=="undecided_conflict":
+                conflict_seen = True
+        if negative_seen:
+            return False
+        elif conflict_seen:
+            return "undecided_conflict"
+        else:
+            return "undecided_none"
 
     @staticmethod
-    def __binarize_use_several_all(pair_records, l_threshold, h_threshold):
+    def __binarize_use_several_all(pair_records,afftype_list, l_threshold, h_threshold):
+        # infers a binary interaction based on the records in bindingdb. binary value need not to have consistent between different affinity types (Ki,Kd,IC50,EC50) but it must be consistent among records of same type
+        # as long as at least one of the affinity types are positive, we infer a positive interaction, but if all of them are consistently negative, we infer negative
+        # conflict within one type of measure invalidates that measure but not the whole results for that pair. as long as there is one conistent positive
+        bin_for_type= dict()
+        for afftype in afftype_list:
+            num_pos= 0
+            num_neg= 0
+            for i in range(len(pair_records)):
+                aff_field = pair_records[i][afftype]
+                if type(aff_field)==str:
+                    bin = bindingdb_records.__binary_from_str(aff_field, l_threshold, h_threshold)
+                    if type(bin)==bool:
+                        if bin:
+                            num_pos[afftype] += 1
+                        else:
+                            num_neg[afftype] += 1
+            ## all records for that measure has been seen time to infer a binary for this afftype
+            num_all = num_pos + num_neg
+            if num_all == 0:
+                bin_for_type[afftype] ="undecided_none"
+            elif num_neg == 0:
+                bin_for_type[afftype] = True
+            elif num_pos == 0:
+                bin_for_type[afftype] = False
+            else:
+                bin_for_type[afftype] = "undecided_conflict"
+
+        negative_seen = False
+        conflict_seen = False
+        positive_seen = False
+        for afftype in afftype_list:
+            if bin_for_type[afftype]==True:
+                positive_seen = True
+            if bin_for_type[afftype]==False:
+                negative_seen = True
+            if bin_for_type[afftype]=="undecided_conflict":
+                conflict_seen = True
+
+        if conflict_seen or (negative_seen and positive_seen):
+            return "undecided_conflict"
+        elif positive_seen:
+            return True
+        elif negative_seen:
+            return False
+        else:
+            return "undecided_none"
+
+    @staticmethod
+    def __binarize_use_several_noconflict(pair_records, afftype_list ,l_threshold, h_threshold):
         #to be implemented if necessary
-        # num_pos = 0
-        # num_neg = 0
-        # for i in range(len(pair_records)):
-        #     bin_Ki = bindingdb_records.__binary_from_str(pair_records[i]["Ki"], l_threshold, h_threshold)
-        #     bin_IC50 = bindingdb_records.__binary_from_str(pair_records[i]["IC50"], l_threshold, h_threshold)
-        #     if (type(bin_Ki) == bool) and (type(bin_IC50) == bool):
-        #         if bin_Ki and bin_IC50:
-        #             num_pos += 1
-        #         elif (not bin_Ki) and (not bin_IC50):
-        #             num_neg += 1
-        #     elif type(bin_Ki) == bool:
-        #         if bin_Ki:
-        #             num_pos += 1
-        #         else:
-        #             num_neg += 1
-        #     elif type(bin_IC50) == bool:
-        #         if bin_IC50:
-        #             num_pos += 1
-        #         else:
-        #             num_neg += 1
-        # num_all = num_pos + num_neg
-        # if num_all == 0:
-        #     return "undecided_none"
-        # if num_neg == 0:
-        #     return True
-        # if num_pos == 0:
-        #     return False
-        return "undecided_conflict"
-
-    @staticmethod
-    def __binarize_use_specific(pair_records, measure_name, l_threshold, h_threshold):
-        #this function takes the id of a drug and a protein and based on the records of affinity measurements in the database, returns a binary interaction (True/False) or an error string
         num_pos = 0
         num_neg = 0
-        for i in range(len(pair_records)):
-            bin_val = bindingdb_records.__binary_from_str(pair_records[i][measure_name], l_threshold, h_threshold)
-            if (type(bin_val) == bool):
-                if bin_val:
-                    num_pos += 1
-                else:
-                    num_neg += 1
+        for afftype in afftype_list:
+            for i in range(len(pair_records)):
+                aff_field = pair_records[i][afftype]
+                if type(aff_field)==str:
+                    bin = bindingdb_records.__binary_from_str(aff_field, l_threshold, h_threshold)
+                    if type(bin)==bool:
+                        if bin:
+                            num_pos += 1
+                        else:
+                            num_neg += 1
+
         num_all = num_pos + num_neg
         if num_all == 0:
             return "undecided_none"
-        elif num_neg == 0:
+        if num_neg == 0:
             return True
-        elif num_pos == 0:
+        if num_pos == 0:
             return False
-        else:
-            return "undecided_conflict"
+        return "undecided_conflict"
+
+    # @staticmethod
+    # def __binarize_use_specific(pair_records, measure_name, l_threshold, h_threshold):
+    #     #this function takes the id of a drug and a protein and based on the records of affinity measurements in the database, returns a binary interaction (True/False) or an error string
+    #     num_pos = 0
+    #     num_neg = 0
+    #     for i in range(len(pair_records)):
+    #         bin_val = bindingdb_records.__binary_from_str(pair_records[i][measure_name], l_threshold, h_threshold)
+    #         if (type(bin_val) == bool):
+    #             if bin_val:
+    #                 num_pos += 1
+    #             else:
+    #                 num_neg += 1
+    #     num_all = num_pos + num_neg
+    #     if num_all == 0:
+    #         return "undecided_none"
+    #     elif num_neg == 0:
+    #         return True
+    #     elif num_pos == 0:
+    #         return False
+    #     else:
+    #         return "undecided_conflict"
 
 
 
@@ -342,12 +457,18 @@ class bindingdb_records:
 
 
 
+
+# if __name__=="__main__":
+#     db = bindingdb_records()
+#     if (os.path.exists("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")):
+#         db.read_from_pickle("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")
+#     else:
+#         db.read_from_csv("../data/bindingdb/db2021m0.tsv")
+#         db.binarize_db(l_threshold=1000, h_threshold=30000)
+#         db.save_to_pickle("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")
 
 if __name__=="__main__":
+    url = "https://www.bindingdb.org/bind/downloads/BindingDB_All_2021m11.tsv.zip"
     db = bindingdb_records()
-    if (os.path.exists("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")):
-        db.read_from_pickle("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")
-    else:
-        db.read_from_csv("../data/bindingdb/db2021m0.tsv")
-        db.binarize_db(l_threshold=1000, h_threshold=30000)
-        db.save_to_pickle("./cached_data/BindingDB_All_2021m10.tsv_records.pickle")
+    db.download_and_read(url,".")
+

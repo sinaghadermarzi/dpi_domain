@@ -1,0 +1,8 @@
+results/
+old/
+experiments/outputs/
+other/
+cenv/
+.*/
+_*/
+
