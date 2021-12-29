@@ -6,7 +6,7 @@
 import pickle
 from tqdm.dask import TqdmCallback
 from tqdm.autonotebook import tqdm
-from download_file import download
+from data_interfaces.download_file import download
 from zipfile import ZipFile
 import math
 
