@@ -278,7 +278,10 @@ class bindingdb_records:
     def get_pAff_avg(self,pid,cid,aff_type):
         aff_dict = self.get_affinities(pid, cid)
         vals = [ v for (v,rel) in aff_dict[aff_type]]
-        aff= -math.log10((sum(vals)/len(vals))/10e9)
+        if len(vals)>0:
+            aff= -math.log10((sum(vals)/len(vals))/10e9)
+        else:
+            aff = "not found"
         return aff
 
 

@@ -14,7 +14,7 @@ import requests
 from tqdm.autonotebook import tqdm
 
 class pfam_records:
-    def __init__(self, working_directory = "DEFAULT", prot_list = "EMPTY", use_cache_file=None):
+    def __init__(self, working_directory = "DEFAULT", prot_list = "EMPTY", use_cache_file="DEFAULT"):
         if working_directory== "DEFAULT":
             here, _ = os.path.split(os.path.abspath(os.path.realpath(__file__)))
             self.work_dir = here + "/cached_data"
@@ -81,23 +81,30 @@ class pfam_records:
 
 
 
-    def add_prots(self, pid_list,use_cache_file=None):
+    def add_prots(self, pid_list,use_cache_file="DEFAULT"):
+        if type(pid_list) == str:
+            pid_list = [pid_list]
+        ids_to_fetch = pid_list
         if use_cache_file:
+            cached_record = dict()
             # read the cache file which is a pickle of a dict like __pfam_record
+            if use_cache_file == "DEFAULT":
+                dir = os.path.dirname(os.path.abspath(__file__)) + "/cached_data"
+                use_cache_file = dir + "/pfam_cache.pkl"
+            else:
+                dir = os.path.dirname(os.path.abspath(use_cache_file))
             if os.path.exists(use_cache_file):
                 with open(use_cache_file, "rb") as inf:
                     cached_record = pickle.load(inf)
-            else:
-                cached_record = dict()
-        pftmp= self.work_dir + "/pfam_tmp"
-        if type(pid_list) ==str:
-            pid_list = [pid_list]
-        if not os.path.exists(pftmp):
-            os.makedirs(pftmp)
-        for pid in tqdm(pid_list, desc="collecting domain annotations"):
-            if pid in cached_record:
-                p_dict = cached_record[pid]
-            else:
+            ids_to_fetch = list(set(pid_list) - set(cached_record.keys()))
+        else:
+            cached_record = dict()
+        fetched_record = dict()
+        if len(ids_to_fetch)>0:
+            pftmp= self.work_dir + "/pfam_tmp"
+            if not os.path.exists(pftmp):
+                os.makedirs(pftmp)
+            for pid in tqdm(ids_to_fetch, desc="collecting domain annotations"):
                 p_path = pftmp + "/" + pid + ".xml"
                 if not os.path.exists(p_path):
                     url = "http://pfam.xfam.org/protein/" + pid + "?output=xml"
@@ -106,6 +113,16 @@ class pfam_records:
                         outf.writelines(req.text)
                 with open(p_path) as pf:
                     p_dict = xmltodict.parse(pf.read())
+                fetched_record[pid] = p_dict
+        cached_record.update(fetched_record)
+        if use_cache_file:
+            if not os.path.exists(dir):
+                os.makedirs(dir)
+            with open(use_cache_file, "wb") as outf:
+                pickle.dump(cached_record, outf)
+
+        for pid in pid_list:
+            p_dict = cached_record[pid]
             self.__pfam_record[pid] = p_dict
             dlist = self.__extract_domain_list(p_dict)
             for d in dlist:
@@ -114,10 +131,7 @@ class pfam_records:
                 else:
                     self.__proteins_with[d] = {pid}
 
-        if use_cache_file:
-            cached_record.update(self.__pfam_record)
-            with open(use_cache_file, "wb") as outf:
-                pickle.dump(cached_record, outf)
+
 
 
     def get_domainlist_for_prot(self, pid):
