@@ -1,4 +1,4 @@
-name: /media/biominework/sinapd/work/dpi_domain/cenv
+name: /home/ghadermarzis/thesiswork/dpi_domain/cenv
 channels:
   - conda-forge
   - defaults
@@ -182,4 +182,4 @@ dependencies:
   - zipp=3.6.0=pyhd3eb1b0_0
   - zlib=1.2.11=h7b6447c_3
   - zstd=1.4.9=haebb681_0
-prefix: /media/biominework/sinapd/work/dpi_domain/cenv
+prefix: /home/ghadermarzis/thesiswork/dpi_domain/cenv
