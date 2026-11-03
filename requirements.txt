@@ -1,0 +1,10 @@
+jupyter
+numpy
+pandas
+dask[dataframe]
+scikit-learn
+scipy
+lifelines
+tqdm
+requests
+xmltodict
