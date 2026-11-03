@@ -26,8 +26,11 @@ All code is under `experiments/`:
 ## Datasets produced
 
 `building_datasets.ipynb` writes these CSVs to `experiments/datasets/`, all with the columns
-`protein_uniprot_id, compound_pubchem_cid, protein_sequence, compound_SMILES, binary_interaction, affinity[-log10(Ki/10e9)]`
-(`binary_interaction` and the affinity are `none` when BindingDB has no usable value):
+`protein_uniprot_id, compound_pubchem_cid, protein_sequence, compound_SMILES, binary_interaction, affinity[-log10(Ki/10e9)]`.
+Every export calls `save_dataset_csv` with its default `only_with_ki=True`, so a pair is written only when
+BindingDB has a Ki value for it; pairs whose binary label comes from Kd/IC50/EC50 alone are dropped rather
+than written with a `none` affinity. The pair lists are selected and the positive/negative ratios computed
+before this filter, so the ratios in the files can differ from those described below:
 
 - `testset1.csv`: the difficult set. Domain-compound pairs where the compound binds a single-domain protein
   carrying the domain but does not bind some other protein carrying the same domain, after merging proteins
